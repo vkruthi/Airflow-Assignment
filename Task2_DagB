@@ -1,0 +1,39 @@
+import os
+from datetime import datetime
+from airflow import DAG
+from airflow.operators.python_operator import PythonOperator
+from airflow.models import Variable
+
+# Set default arguments
+default_args = {
+    'owner': 'airflow',
+    'retries': 1,
+    'start_date': datetime(2024, 12, 7),
+}
+
+# Create DAG_B
+dag_b = DAG(
+    'DAG_B',
+    default_args=default_args,
+    schedule_interval=None,  # DAG_B doesn't run on a schedule
+)
+
+# Function to read the fan letter
+def read_fan_letter(**kwargs):
+    superhero_name = kwargs['dag_run'].conf['superhero_name']
+    file_path = kwargs['dag_run'].conf['file_path']
+    
+    with open(file_path, 'r') as file:
+        letter_content = file.read()
+    
+    print(f"Fan letter for {superhero_name}:\n{letter_content}")
+
+# TASK_E: Read and print the fan letter
+task_e = PythonOperator(
+    task_id='task_e',
+    python_callable=read_fan_letter,
+    provide_context=True,
+    dag=dag_b,
+)
+
+task_e
