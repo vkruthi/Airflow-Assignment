@@ -1,0 +1,111 @@
+import random
+import os
+from datetime import datetime
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.operators.python import BranchPythonOperator
+from airflow.operators.dummy import DummyOperator
+from airflow.operators.dagrun_operator import TriggerDagRunOperator
+from airflow.models import Variable
+
+# Set default arguments
+default_args = {
+    'owner': 'airflow',
+    'retries': 1,
+    'start_date': datetime(2024, 12, 7),
+}
+
+# Create the DAG_A
+dag_a = DAG(
+    'DAG_A',
+    default_args=default_args,
+    schedule_interval='@daily',  # DAG_A will run daily
+)
+
+# Function to generate the LUCK_SCORE
+def generate_luck_score(**kwargs):
+    luck_score = random.random()
+    kwargs['ti'].xcom_push(key='luck_score', value=luck_score)
+    return luck_score
+
+# Function to create a fan letter for SUPE_A
+def write_fan_letter_supe_a(**kwargs):
+    letter_content = "Dear SUPE_A,\n\nYou are the best superhero! Keep saving the world.\n\nSincerely,\nYour fan."
+    file_path = '/tmp/fan_letter_supe_a.txt'  # Set your preferred location
+    with open(file_path, 'w') as file:
+        file.write(letter_content)
+    kwargs['ti'].xcom_push(key='superhero_name', value="SUPE_A")
+    kwargs['ti'].xcom_push(key='file_path', value=file_path)
+
+# Function to create a fan letter for SUPE_B
+def write_fan_letter_supe_b(**kwargs):
+    letter_content = "Dear SUPE_B,\n\nYou are an amazing superhero! Keep being awesome.\n\nSincerely,\nYour fan."
+    file_path = '/tmp/fan_letter_supe_b.txt'  # Set your preferred location
+    with open(file_path, 'w') as file:
+        file.write(letter_content)
+    kwargs['ti'].xcom_push(key='superhero_name', value="SUPE_B")
+    kwargs['ti'].xcom_push(key='file_path', value=file_path)
+
+# Function to trigger DAG_B
+def trigger_dag_b(**kwargs):
+    superhero_name = kwargs['ti'].xcom_pull(key='superhero_name')
+    file_path = kwargs['ti'].xcom_pull(key='file_path')
+    
+    trigger = TriggerDagRunOperator(
+        task_id='trigger_dag_b',
+        trigger_dag_id="DAG_B",  # This triggers DAG_B
+        conf={'superhero_name': superhero_name, 'file_path': file_path},
+        dag=dag_a,
+    )
+    trigger.execute(context=kwargs)
+
+# Task_A: Generate the random number
+task_a = PythonOperator(
+    task_id='task_a',
+    python_callable=generate_luck_score,
+    provide_context=True,
+    dag=dag_a,
+)
+
+# Branching logic to determine if we run TASK_B or TASK_C
+def branch_task(**kwargs):
+    luck_score = kwargs['ti'].xcom_pull(task_ids='task_a', key='luck_score')
+    if luck_score > 0.5:
+        return 'task_b'
+    return 'task_c'
+
+# Branch Python Operator to branch between TASK_B and TASK_C
+branch_task = BranchPythonOperator(
+    task_id='branch_task',
+    python_callable=branch_task,
+    provide_context=True,
+    dag=dag_a,
+)
+
+# TASK_B: Write fan letter to SUPE_A
+task_b = PythonOperator(
+    task_id='task_b',
+    python_callable=write_fan_letter_supe_a,
+    provide_context=True,
+    dag=dag_a,
+)
+
+# TASK_C: Write fan letter to SUPE_B
+task_c = PythonOperator(
+    task_id='task_c',
+    python_callable=write_fan_letter_supe_b,
+    provide_context=True,
+    dag=dag_a,
+)
+
+# TASK_D: Trigger DAG_B
+task_d = PythonOperator(
+    task_id='task_d',
+    trigger_rule = 'none_failed_min_one_success',
+    python_callable=trigger_dag_b,
+    provide_context=True,
+    dag=dag_a,
+)
+
+# Setting up the task sequence
+task_a >> branch_task >> [task_b, task_c] >> task_d
