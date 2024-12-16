@@ -1,0 +1,48 @@
+from airflow import DAG
+from airflow.operators.dummy_operator import DummyOperator
+from airflow.operators.python import PythonOperator
+from airflow.utils.dates import days_ago
+import random
+
+
+# Function to simulate success/failure
+def random_task_outcome():
+    # Simulate a random failure or success
+    if random.choice([True, False]):
+        print("Task succeeded")
+    else:
+        raise Exception("Task failed")
+
+# Define default_args dictionary
+default_args = {
+    'owner': 'airflow',
+    'retries': 1,
+    'email_on_failure': True,  # Send email on failure
+    'email_on_retry': True,    # Send email on retry
+    'email': ['email@gmail.com'],  
+}
+
+# Define the DAG
+with DAG(
+    'Task4_Dag2',
+    default_args=default_args,
+    description='A dummy task that sends email alert on success or failure',
+    schedule_interval='@daily',  # Runs daily
+    start_date=days_ago(1),
+    catchup=False,
+) as dag:
+
+    # Task that always succeeds or fails randomly
+    random_task = PythonOperator(
+        task_id='random_task',
+        python_callable=random_task_outcome,  # Function that simulates success/failure
+    )
+
+    # Dummy task to simulate success (optional)
+    success_task = DummyOperator(
+        task_id='success_task'
+    )
+
+
+random_task >> success_task
+    
