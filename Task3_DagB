@@ -1,0 +1,75 @@
+from datetime import datetime
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.models import DagRun
+from airflow.utils.dates import days_ago
+from airflow.utils.email import send_email
+
+# Default arguments for DAG
+default_args = {
+    'owner': 'airflow',
+    'retries': 1,
+    'email_on_failure': True,
+    'email': ['email@gmail.com'],
+    'start_date': datetime(2024, 12, 7),
+}
+
+# Create the DAG
+dag2 = DAG(
+    'dag2',
+    default_args=default_args,
+    schedule_interval=None,  # This DAG will only be triggered by dag1
+    tags=['assignment'],
+)
+
+# Function to check the status of dag1 tasks and print the result
+def check_dag1_status(**kwargs):
+    dag_run = kwargs['dag_run']
+    task_instances = dag_run.get_task_instances()
+    all_success = True
+    
+    # Check status of each task in dag1
+    for task_instance in task_instances:
+        if task_instance.state != 'success':
+            all_success = False
+            break
+    
+    # Print status and send email if any task failed
+    if all_success:
+        print("dag1: Success")
+    else:
+        print("dag1: Failed")
+        # Send an email if any task failed
+        send_email(
+            to='email@gmail.com',  # Add your email or list of emails
+            subject='DAG1 Failed',
+            html_content="DAG1 has failed. Please check the task logs for more details."
+        )
+
+    dag_run = kwargs['dag_run']
+    task_instances = dag_run.get_task_instances()
+    all_success = True
+    
+    # Check status of each task in dag1
+    for task_instance in task_instances:
+        if task_instance.state != 'success':
+            all_success = False
+            break
+    
+    # Print status
+    if all_success:
+        print("dag1: Success")
+    else:
+        print("dag1: Failed")
+
+# Monitor dag1 status using a PythonOperator
+monitor_dag1_status = PythonOperator(
+    task_id='monitor_dag1_status',
+    python_callable=check_dag1_status,
+    provide_context=True,
+    email_on_failure= True,
+    email=['email@gmail.com'],
+    dag=dag2
+)
+
+monitor_dag1_status
