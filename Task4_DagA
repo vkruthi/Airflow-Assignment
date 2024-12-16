@@ -1,0 +1,52 @@
+from airflow import DAG
+from airflow.providers.postgres.operators.postgres import PostgresOperator
+from airflow.utils.dates import days_ago
+
+default_args = {
+    'owner': 'airflow',
+    'retries': 1,
+}
+
+with DAG(
+    'postgres_task_dag',
+    default_args=default_args,
+    description='DAG to interact with PostgreSQL database',
+    schedule_interval=None,  # No automatic scheduling, manually triggered
+    start_date=days_ago(1),
+    catchup=False,
+) as dag:
+
+    # Task to create a table in PostgreSQL
+    create_table = PostgresOperator(
+        task_id='create_table',
+        sql="""
+        CREATE TABLE IF NOT EXISTS test_table (
+            id SERIAL PRIMARY KEY,
+            name VARCHAR(255),
+            age INT
+        );
+        """,
+        postgres_conn_id='postgres_conn',  # The connection ID defined in Airflow
+    )
+
+    # Task to insert values into PostgreSQL table
+    insert_values = PostgresOperator(
+        task_id='insert_values',
+        sql="""
+        INSERT INTO test_table (name, age) VALUES
+        ('Alice', 25),
+        ('Bob', 30),
+        ('Charlie', 35);
+        """,
+        postgres_conn_id='postgres_conn',  # The connection ID defined in Airflow
+    )
+
+    # Task to select values from PostgreSQL table
+    select_values = PostgresOperator(
+        task_id='select_values',
+        sql="SELECT * FROM test_table;",
+        postgres_conn_id='postgres_conn',  # The connection ID defined in Airflow
+        do_xcom_push=True
+    )
+
+    create_table >> insert_values >> select_values
