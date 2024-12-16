@@ -1,0 +1,182 @@
+from datetime import datetime
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from azure.storage.blob import BlobServiceClient
+import json
+import pandas as pd
+import os
+from airflow.models import Variable
+from airflow.operators.dagrun_operator import TriggerDagRunOperator
+
+# Default arguments for DAG
+default_args = {
+    'owner': 'airflow',
+    'retries': 1,
+    'email_on_failure': True,
+    'email': ['email@gmail.com'],
+    'start_date': datetime(2024, 12, 7),
+    'max_active_runs': 1,  # Ensures only one instance runs at a time
+}       
+
+# Create the DAG
+dag1 = DAG(
+    'dag1',
+    default_args=default_args,
+    schedule_interval='@daily',  # Schedule it to run daily
+    tags=['assignment'],
+)
+
+# Fetch configuration from Airflow Variables (for flexibility)
+config = Variable.get("assignment_config", deserialize_json=True)
+
+# Function to fetch data from Azure Blob Storage
+def fetch_data_from_azure(country, **kwargs):
+    # Retrieve Azure connection details from Airflow variables
+    connection_string = config['azure_connection_string']  # Azure Blob Storage connection string
+    container_name = config['azure_blob_container']  # Container where files are stored
+    
+    # Construct the blob path for the country's data
+    blob_path = f"fake_data_{country}.json"
+    
+    # Initialize the BlobServiceClient
+    blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+    blob_client = blob_service_client.get_blob_client(container=container_name, blob=blob_path)
+    
+    try:
+        # Download the blob data
+        blob_data = blob_client.download_blob()
+        data = json.loads(blob_data.readall())  # Read and parse the JSON
+        
+        # Limit to 1000 records (just for this task)
+        data = data[:1000]
+        
+        kwargs['ti'].xcom_push(key=f'fake_data_{country}', value=data)
+        return data
+    
+    except Exception as e:
+        raise Exception(f"Error fetching data from Azure Blob for {country}: {str(e)}")
+
+# Function to convert data to CSV and store in the data lake
+def save_data_to_csv(country, **kwargs):
+    data = kwargs['ti'].xcom_pull(task_ids=f'fetch_data_from_azure_{country}', key=f'fake_data_{country}')
+    
+    # Convert the data to a pandas DataFrame
+    df = pd.DataFrame(data)
+    
+    # Create directory structure
+    now = datetime.now()
+    folder_path = f"/tmp/{now.year}/{now.month}/{now.day}/{country}"
+    os.makedirs(folder_path, exist_ok=True)  # Create the directory if it doesn't exist
+    
+    # Define the file path with the naming convention
+    file_path = os.path.join(folder_path, f"{country}_data.csv")
+    
+    # Save the DataFrame to CSV
+    df.to_csv(file_path, index=False)
+    
+    # Push the file path to XCom for later use (uploading to Azure Blob Storage)
+    kwargs['ti'].xcom_push(key=f'{country}_file_path', value=file_path)
+    
+    return file_path
+
+# Function to upload the CSV to Azure Blob Storage
+def upload_to_azure_blob(country, **kwargs):
+    file_path = kwargs['ti'].xcom_pull(task_ids=f'save_data_to_csv_{country}', key=f'{country}_file_path')
+    
+    # Azure Blob Storage container details
+    connection_string = config['azure_connection_string']
+    container_name = config['azure_blob_container']
+    
+    # Blob path with the naming convention
+    now = datetime.now()
+    blob_path = f"data_lake/{country}/{now.year}/{now.month}/{now.day}/{country}_data.csv"
+    
+    # Initialize the BlobServiceClient
+    blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+    blob_client = blob_service_client.get_blob_client(container=container_name, blob=blob_path)
+    
+    # Upload the file
+    with open(file_path, "rb") as data:
+        blob_client.upload_blob(data, overwrite=True)
+    
+    print(f"File {file_path} uploaded to Azure Blob Storage at {blob_path}")
+    
+    return blob_path
+
+# Function to trigger dag2
+def trigger_dag2(**kwargs):
+    trigger = TriggerDagRunOperator(
+        task_id='trigger_dag2',
+        trigger_dag_id='dag2',  # This triggers dag2
+        conf={'status': 'success'},
+        dag=dag1,
+    )
+    trigger.execute(context=kwargs)
+
+# Loop to fetch data for multiple countries
+countries = ['India', 'US', 'UK']
+
+# Initialize dictionaries for tasks
+tasks_fetch_data = {}
+tasks_save_data = {}
+tasks_upload_data = {}
+
+# Create tasks for each country
+for country in countries:
+    tasks_fetch_data[country] = PythonOperator(
+        task_id=f'fetch_data_from_azure_{country}',
+        python_callable=fetch_data_from_azure,
+        op_args=[country],
+        provide_context=True,
+        dag=dag1,
+    )
+
+    # Save data to CSV for each country
+    tasks_save_data[country] = PythonOperator(
+        task_id=f'save_data_to_csv_{country}',
+        python_callable=save_data_to_csv,
+        op_args=[country],
+        provide_context=True,
+        dag=dag1,
+    )
+
+    # Upload data to Azure Blob Storage for each country
+    tasks_upload_data[country] = PythonOperator(
+        task_id=f'upload_to_azure_blob_{country}',
+        python_callable=upload_to_azure_blob,
+        op_args=[country],
+        provide_context=True,
+        dag=dag1,
+    )
+
+# Task Definition
+# Start task can be added for clarity (if needed)
+start_task = PythonOperator(
+    task_id='start_task',
+    python_callable=lambda: print("Starting the DAG execution"),
+    dag=dag1,
+)
+
+
+# Trigger DAG2 after all tasks complete (irrespective of success/failure)
+end_task = PythonOperator(
+    task_id='end_task',
+    python_callable=trigger_dag2,
+    provide_context=True,
+    trigger_rule='all_done',
+    dag=dag1,
+)
+
+task_c = PythonOperator(
+    task_id='task_c',
+    python_callable=lambda: raise_exception("Failure in Query c"),
+    dag=dag1,
+)
+
+
+# Set task dependencies
+start_task >> [tasks_fetch_data[country] for country in countries]
+for country in countries:
+    tasks_fetch_data[country] >> tasks_save_data[country]
+    tasks_save_data[country] >> tasks_upload_data[country]
+tasks_upload_data['India'] >> tasks_upload_data['US'] >> tasks_upload_data['UK'] >> task_c >> end_task
