@@ -1,0 +1,79 @@
+from airflow import DAG
+import os
+import json
+import requests
+from airflow.operators.python_operator import PythonOperator
+from datetime import datetime
+from airflow.models import Variable
+from airflow.providers.http.hooks.http import HttpHook
+
+
+
+# Setting variables in airflow
+Variable.set("my_variable", "Hello, Airflow!")
+
+
+# FUNCTIONS DEFINATION
+def hello_airflow():
+    print("hello Devanshee")
+
+def print_variable():
+    my_variable = Variable.get("my_variable", default_var="Default value")
+    print(f"Variable value: {my_variable}")
+
+def send_google_chat_alert():
+    # RAISE ERR IF G-CHAT URL MISSING
+
+    GCHAT_WEBHOOK_URL = "https://chat.googleapis.com/v1/spaces/sBJw7sAAAAE/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=J5QaDd18ObFmL2Jh-Oe8SckMyMXEDXk9Q3PMhR0Jd-c"
+    message = {
+        "text": "Alert from Airflow: The variable value is: " + Variable.get("my_variable")
+    }
+    response = requests.post(GCHAT_WEBHOOK_URL, json=message)
+
+    if response.status_code == 200:
+        print("Successfully sent message to Google Chat.")
+    else:
+        print(f"Failed to send message to Google Chat. Status code: {response.status_code}")
+        print(f"Response: {response.text}")
+
+
+
+
+
+
+# DAG DEFINITION
+default_args = {
+    'owner': 'airflow',
+    'retries': 1,
+    'start_date': datetime(2024, 12, 7),  # start_date is in the past
+}
+
+dag = DAG(
+    'TASK1_Q2',
+    default_args=default_args,
+    schedule_interval=None,  # Runs manually
+)
+
+
+# TASKS
+hello_task = PythonOperator(
+    task_id='hello_task',
+    python_callable=hello_airflow,
+    dag=dag,
+)
+
+read_var_task = PythonOperator(
+    task_id='read_variable_task',
+    python_callable=print_variable,
+    dag=dag,
+)
+
+alert_task = PythonOperator(
+    task_id='send_alert',
+    python_callable=send_google_chat_alert,
+    dag=dag,
+)
+
+
+
+hello_task >> read_var_task >> alert_task
